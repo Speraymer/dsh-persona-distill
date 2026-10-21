@@ -91,7 +91,7 @@ dsh plugin --profile web add dsh-persona-distill
 
 如果装了 `dsh-wechat-plugin`，人格真正被改写的那天会推一条微信：
 
-> 🐋 人格更新 · 2026-10-22
+> 🐋 人格更新 · <日期>
 > 「我学来的」重写了。详见 ~/.dsh/AGENTS.md
 
 没装就**安静跳过**，不报错、不打扰。

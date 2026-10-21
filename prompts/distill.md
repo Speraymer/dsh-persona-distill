@@ -66,10 +66,10 @@
     "bili": {
       "voiceLine": 103, "voiceTotal": 103,
       "notesLine": 27,  "notesTotal": 27,
-      "digestDate": "2026-10-22"
+      "digestDate": "2026-01-01"
     }
   },
-  "lastPromote": "2026-10-22"
+  "lastPromote": "2026-01-01"
 }
 ```
 
