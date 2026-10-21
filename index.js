@@ -31,6 +31,7 @@ const DEFAULTS = {
   ownerName: '',
   heart: '',
   identity: '',
+  persona: 'blank',
   model: 'deepseek-flash',
   lastRun: '',
   lastResult: '',
@@ -98,7 +99,7 @@ function runOnce(cfg, { manual = false } = {}) {
   if (!existsSync(charter)) {
     ensurePersonaHome()
   }
-  ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity })
+  ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity, persona: cfg.persona })
 
   const overlay = ensureOverlay(cfg.model)
   const today = new Date().toISOString().slice(0, 10)
@@ -163,7 +164,7 @@ export function apply(ctx, config) {
   try {
     ensurePersonaHome()
     const cfg = readCfg()
-    ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity })
+    ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity, persona: cfg.persona })
   } catch (e) {
     log(`初始化失败：${e?.message ?? e}`)
   }
@@ -191,7 +192,7 @@ export function apply(ctx, config) {
     if (req.method === 'POST' && path === '/api/persona-distill/config') {
       const body = await readBody(req)
       const allowed = {}
-      for (const k of ['enabled', 'runAt', 'ownerName', 'heart', 'identity', 'model']) {
+      for (const k of ['enabled', 'runAt', 'ownerName', 'heart', 'identity', 'persona', 'model']) {
         if (k in body) allowed[k] = body[k]
       }
       userCfg = writeCfg(allowed)
