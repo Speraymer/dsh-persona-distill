@@ -544,6 +544,7 @@ export function apply(ctx, config) {
         agents: readAgentsSections(),
         home: dshHome(),
         hasDsh: cliCache.v,
+        hasWechat: existsSync(join(dshHome(), 'profiles', 'desktop', 'node_modules', 'dsh-wechat-plugin', 'cli.js')),
         running: isRunning(),
         dueNow: dueNow(cfg),
       })

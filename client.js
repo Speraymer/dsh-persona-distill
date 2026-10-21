@@ -96,6 +96,7 @@ window.__ModuleLoader__.load({
           h('div', { style: S.hint }, '上次：' + (cfg.lastRun || '从未跑过') + ' · ' + (cfg.lastResult || '—')),
           status.hasDsh === false ? h('div', { style: { ...S.hint, color: '#b91c1c' } }, '⚠️ 找不到 dsh CLI —— 蒸馏跑不起来（可设置 DSH_BIN 环境变量）') : null,
           status.running ? h('div', { style: { ...S.hint, color: '#b45309' } }, '⏳ 上一轮还在跑') : null,
+          cfg.enabled && status.hasWechat === false ? h('div', { style: { ...S.hint, color: '#0369a1', borderLeft: '3px solid #0369a1', paddingLeft: 8 } }, '💬 想让人格定型那天收到一条微信通知？需要先装 dsh-wechat-plugin（装好自动生效）。搞不定就跟你的 AI 说一声，它帮你接。') : null,
           h('div', { style: S.hint },
             '原料天天攒，人格每周长。插件只负责「有原料就蒸馏」，不替你刷内容。'),
           h('div', { style: { ...S.row, marginTop: 10 } },
