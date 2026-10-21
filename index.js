@@ -32,6 +32,7 @@ const DEFAULTS = {
   persona: 'blank',
   model: 'deepseek-flash',
   dshBin: '',
+  wechatNotify: 'auto', // auto = 装了微信插件就发；off = 不发
   lastRun: '',
   lastResult: '',
   lastFiredDay: '', // 为「哪一天」跑过（不是跑完那天，跨午夜不会错）
@@ -401,6 +402,23 @@ function runOnce(cfg, { manual = false } = {}) {
         }
       }
 
+      // 3) 定型了就说一声
+      try {
+        if (cfg.wechatNotify !== 'off') {
+          const sec = (x) => {
+            const m = String(x).match(/<!-- AUTO:BEGIN -->([\s\S]*?)<!-- AUTO:END -->/)
+            return m ? m[1].trim() : null
+          }
+          const b = sec(agentsBefore)
+          const a = sec(existsSync(agentsFile()) ? readFileSync(agentsFile(), 'utf8') : '')
+          if (b !== null && a !== null && b !== a) {
+            const ok = notifyWechat('🐋 人格更新 · ' + runForDay + '\n「我学来的」重写了。详见 ~/.dsh/AGENTS.md')
+            log(ok ? '微信通知已发' : '微信通知跳过（没装微信插件）')
+          }
+        }
+      } catch (e) {
+        log('微信通知出错：' + (e?.message ?? e))
+      }
       if (out) {
         try { writeFileSync(join(pluginHome(), 'last-run.txt'), out, 'utf8') } catch { /* 忽略 */ }
       }
@@ -468,6 +486,30 @@ function readBody(req, limit = 64 * 1024) {
     req.on('error', () => finish({}))
     req.on('aborted', () => finish({}))
   })
+}
+
+// ---------------------------------------------------------------- 微信通知（可选）
+
+/**
+ * 定型了就跟主人说一声。没装微信插件就安静跳过 —— 不报错、不打扰。
+ * 用 Electron 当 node 跑微信插件的 cli，跟本机脚本里那条路一样。
+ */
+function notifyWechat(text) {
+  try {
+    const cli = join(dshHome(), 'profiles', 'desktop', 'node_modules', 'dsh-wechat-plugin', 'cli.js')
+    if (!existsSync(cli)) return false
+    const child = spawn(process.execPath, [cli, text], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_HOME: dshHome() },
+      windowsHide: true,
+      detached: true,
+      stdio: 'ignore',
+    })
+    if (child.unref) child.unref()
+    return true
+  } catch (e) {
+    log('微信通知失败：' + (e?.message ?? e))
+    return false
+  }
 }
 
 // ---------------------------------------------------------------- 插件入口
