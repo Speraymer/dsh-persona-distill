@@ -68,6 +68,7 @@ window.__ModuleLoader__.load({
       const run = async () => {
         setMsg('已开始，运行可能需要一两分钟…')
         try {
+          await jpost('/config', cfg) // 先落盘，免得跑的是旧配置
           const r = await jpost('/run', {})
           setMsg(r.ok ? '跑起来了（看日志里的进度）' : (r.error || '没跑起来'))
         } catch (e) { setErr(e.message) }
@@ -91,6 +92,7 @@ window.__ModuleLoader__.load({
 
         h('div', { style: S.card },
           h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '人格蒸馏'),
+          h('div', { style: S.hint }, '上次：' + (cfg.lastRun || '从未跑过') + ' · ' + (cfg.lastResult || '—')),
           h('div', { style: S.hint },
             '原料天天攒，人格每周长。插件只负责「有原料就蒸馏」，不替你刷内容。'),
           h('div', { style: { ...S.row, marginTop: 10 } },
