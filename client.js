@@ -47,13 +47,14 @@ window.__ModuleLoader__.load({
       const [cfg, setCfg] = React.useState(null)
       const [sources, setSources] = React.useState([])
       const [agents, setAgents] = React.useState(null)
+      const [status, setStatus] = React.useState({})
       const [msg, setMsg] = React.useState('')
 
       const load = async () => {
         setLoading(true); setErr('')
         try {
           const r = await jget('/status')
-          setCfg(r.config); setSources(r.sources || []); setAgents(r.agents || null)
+          setCfg(r.config); setSources(r.sources || []); setAgents(r.agents || null); setStatus(r)
         } catch (e) { setErr(e.message) } finally { setLoading(false) }
       }
       React.useEffect(() => { load() }, [])
@@ -93,6 +94,8 @@ window.__ModuleLoader__.load({
         h('div', { style: S.card },
           h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '人格蒸馏'),
           h('div', { style: S.hint }, '上次：' + (cfg.lastRun || '从未跑过') + ' · ' + (cfg.lastResult || '—')),
+          status.hasDsh === false ? h('div', { style: { ...S.hint, color: '#b91c1c' } }, '⚠️ 找不到 dsh CLI —— 蒸馏跑不起来（可设置 DSH_BIN 环境变量）') : null,
+          status.running ? h('div', { style: { ...S.hint, color: '#b45309' } }, '⏳ 上一轮还在跑') : null,
           h('div', { style: S.hint },
             '原料天天攒，人格每周长。插件只负责「有原料就蒸馏」，不替你刷内容。'),
           h('div', { style: { ...S.row, marginTop: 10 } },
