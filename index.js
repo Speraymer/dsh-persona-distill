@@ -3,17 +3,18 @@
  * ============================================================================
  * 把「原料 → 候选 → 人格」这条流水线插件化。
  *
- * 设计要点（2026-10-22 审查后加固）：
+ * 设计要点（2026-10-22 两轮审查后加固）：
  *   1. **不假设用户装了任何东西**：只扫 `<家>/*\/source.json`，有原料才干活。
  *   2. **默认全开**：B站 / 微博 / 知乎三个已知源都探测，找到就问要不要接。
- *   3. **每天定时 + 补跑**：记「今天跑过没」到配置里，DSH 启动后 6 小时内会补。
- *   4. **手写段有硬保护**：跑前快照、跑后校验 HAND 段，变了就回滚。
- *   5. **单实例**：run.lock 防两个 headless 同时重写人格。
+ *   3. **每天定时 + 补跑**：`lastFiredDay` 记「为哪天跑过」且**任何失败路径都写**
+ *      （否则定时器会每分钟重试到窗口结束）。当天内任意时刻开机都会补。
+ *   4. **手写段有硬保护**：跑前快照、跑后校验「内容 + 结构」，变了就回滚。
+ *   5. **单实例**：`run.lock` 原子创建 + 带 pid + 只释放自己的锁。
  * ============================================================================
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, copyFileSync, rmSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, copyFileSync, rmSync, statSync, readdirSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { dshHome, pluginHome, personaHome, agentsFile } from './lib/paths.mjs'
 import { buildHeadlessCommand } from './lib/dsh.mjs'
 import { probeSources } from './lib/sources.mjs'
@@ -33,7 +34,7 @@ const DEFAULTS = {
   dshBin: '',
   lastRun: '',
   lastResult: '',
-  lastFiredDay: '', // 补跑判断用：今天跑过没有（存盘，不是内存）
+  lastFiredDay: '', // 为「哪一天」跑过（不是跑完那天，跨午夜不会错）
 }
 
 const OVERLAY_HEADER = '# persona-distill overlay v2'
@@ -54,30 +55,31 @@ const OVERLAY_BODY = `# 蒸馏会话用的最小 overlay —— 只要账号和�
     reasoningEffort: high
 `
 
-const LOCK_STALE_MS = 90 * 60 * 1000 // 90 分钟没动静就当陈旧，可抢占
-const CATCHUP_WINDOW_MS = 6 * 3600 * 1000 // 只补 6 小时内的
+const LOCK_STALE_MS = 90 * 60 * 1000
+const MAX_OUT = 2 * 1024 * 1024
+const KEEP_SNAPSHOTS = 30
 
 // ---------------------------------------------------------------- 时间
 
-/** 本地日期 YYYY-MM-DD（**不用 toISOString**，那是 UTC，东八区凌晨会错一天） */
 function localDate(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-/** 本地时间戳 YYYY-MM-DD-HHmm */
 function localStamp(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0')
-  return `${localDate(d)}-${p(d.getHours())}${p(d.getMinutes())}`
+  return `${localDate(d)}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
-/** 把用户填的时间归一化成 HH:mm（容忍 4:10 / 04：10 / 带空格 / 04:10:00） */
+/** 归一化成 HH:mm；**不合法返回 null**（别偷偷改成 04:10） */
 function normalizeRunAt(s) {
-  const t = String(s || '').trim().replace(/：/g, ':')
-  const m = t.match(/^(\d{1,2})\s*:\s*(\d{1,2})/)
-  if (!m) return '04:10'
-  const h = Math.min(23, Math.max(0, Number(m[1])))
-  const mi = Math.min(59, Math.max(0, Number(m[2])))
+  const t = String(s ?? '').trim().replace(/：/g, ':')
+  if (!t) return null
+  const m = t.match(/^(\d{1,2})\s*:\s*(\d{1,2})(?::\d{1,2})?$/)
+  if (!m) return null
+  const h = Number(m[1])
+  const mi = Number(m[2])
+  if (!(h >= 0 && h <= 23 && mi >= 0 && mi <= 59)) return null
   return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0')
 }
 
@@ -88,16 +90,15 @@ const cfgFile = () => join(pluginHome(), 'config.json')
 function readCfg() {
   try {
     const raw = JSON.parse(readFileSync(cfgFile(), 'utf8'))
-    return { ...DEFAULTS, ...raw, runAt: normalizeRunAt(raw.runAt) }
+    return { ...DEFAULTS, ...raw, runAt: normalizeRunAt(raw.runAt) || '04:10' }
   } catch {
     return { ...DEFAULTS }
   }
 }
 
-/** 写配置；失败时**不要**假装成功 */
 function writeCfg(patch) {
   const next = { ...readCfg(), ...patch }
-  next.runAt = normalizeRunAt(next.runAt)
+  next.runAt = normalizeRunAt(next.runAt) || '04:10'
   try {
     mkdirSync(pluginHome(), { recursive: true })
     writeFileSync(cfgFile(), JSON.stringify(next, null, 2), 'utf8')
@@ -126,7 +127,6 @@ function log(msg) {
 
 // ---------------------------------------------------------------- overlay
 
-/** 每次都对一遍版本和模型 —— 改设置能生效，模板升级也能到老用户 */
 function ensureOverlay(model) {
   const home = personaHome()
   mkdirSync(home, { recursive: true })
@@ -150,14 +150,18 @@ function ensureOverlay(model) {
   return f
 }
 
-// ---------------------------------------------------------------- 手写段保护
+// ---------------------------------------------------------------- 人格保护
+
+const HAND_BEGIN = '<!-- HAND:BEGIN'
+const HAND_END = '<!-- HAND:END -->'
+const AUTO_BEGIN = '<!-- AUTO:BEGIN -->'
+const AUTO_END = '<!-- AUTO:END -->'
 
 function handSection(text) {
   const m = String(text).match(/<!-- HAND:BEGIN[^>]*-->([\s\S]*?)<!-- HAND:END -->/)
   return m ? m[1] : null
 }
 
-/** 跑之前快照 AGENTS.md */
 function snapshotAgents() {
   const file = agentsFile()
   if (!existsSync(file)) return ''
@@ -166,6 +170,13 @@ function snapshotAgents() {
     mkdirSync(dir, { recursive: true })
     const dst = join(dir, `pre-${localStamp()}.md`)
     copyFileSync(file, dst)
+    // 只留最近 N 份
+    try {
+      const all = readdirSync(dir).filter((f) => f.startsWith('pre-')).sort()
+      for (const old of all.slice(0, Math.max(0, all.length - KEEP_SNAPSHOTS))) {
+        rmSync(join(dir, old), { force: true })
+      }
+    } catch { /* 清理失败不拦着 */ }
     return dst
   } catch (e) {
     log(`快照失败：${e?.message ?? e}`)
@@ -173,60 +184,114 @@ function snapshotAgents() {
   }
 }
 
-/** 比对：HAND 段有没有被动手脚 */
-export function verifyHand(before, after) {
+/**
+ * 校验「内容 + 结构」：
+ *   - HAND 段内容没被改
+ *   - 四个标记都还在（少一个就是结构坏了）
+ *   - HAND:END 到 AUTO:BEGIN 之间没被塞东西
+ *   - AUTO 段不能整个消失（那是每周的产物，没了等于白跑）
+ */
+function verifyPersona(before, after) {
   const b = handSection(before)
   const a = handSection(after)
-  if (b === null) return { ok: true } // 本来就没有手写段，没什么可丢的
-  if (a === null) return { ok: false, why: 'HAND 段整个不见了' }
-  if (b.trim() !== a.trim()) return { ok: false, why: 'HAND 段内容被改了' }
+
+  // HAND 段：本来就没有就不管
+  if (b !== null) {
+    if (a === null) return { ok: false, why: 'HAND 段整个不见了' }
+    if (b.trim() !== a.trim()) return { ok: false, why: 'HAND 段内容被改了' }
+  }
+
+  // 结构：原文件里的标记，跑完必须还在
+  for (const mark of [HAND_BEGIN, HAND_END, AUTO_BEGIN, AUTO_END]) {
+    if (before.includes(mark) && !after.includes(mark)) {
+      return { ok: false, why: `结构标记丢了：${mark}` }
+    }
+  }
+
+  // 两个段之间的空白区不能长出新内容
+  const gap = (t) => {
+    const x = t.indexOf(HAND_END)
+    const y = t.indexOf(AUTO_BEGIN)
+    return x >= 0 && y > x ? t.slice(x + HAND_END.length, y).trim() : null
+  }
+  const gb = gap(before)
+  const ga = gap(after)
+  if (gb !== null && ga !== null && gb !== ga) {
+    return { ok: false, why: 'HAND:END 与 AUTO:BEGIN 之间多了内容（可能是注入）' }
+  }
+
+  // AUTO 段不能整个消失
+  const hasAutoBefore = before.includes(AUTO_BEGIN) && before.includes(AUTO_END)
+  const hasAutoAfter = after.includes(AUTO_BEGIN) && after.includes(AUTO_END)
+  if (hasAutoBefore && !hasAutoAfter) return { ok: false, why: 'AUTO 段整个消失了（每周的产物）' }
+
   return { ok: true }
 }
 
+/** 兼容旧名字（测试里用过 verifyHand） */
+export const verifyHand = verifyPersona
+
 function restoreFrom(path) {
+  if (!path || !existsSync(path)) return false
   try {
-    if (path && existsSync(path)) {
-      copyFileSync(path, agentsFile())
-      return true
-    }
+    copyFileSync(path, agentsFile())
+    return true
   } catch (e) {
     log(`回滚失败：${e?.message ?? e}`)
+    return false
   }
-  return false
 }
 
 // ---------------------------------------------------------------- 单实例锁
 
 const lockFile = () => join(pluginHome(), 'run.lock')
 
-function acquireLock() {
+function lockInfo() {
   try {
-    mkdirSync(pluginHome(), { recursive: true })
-    const f = lockFile()
-    if (existsSync(f)) {
-      const started = Number(readFileSync(f, 'utf8')) || 0
-      if (Date.now() - started < LOCK_STALE_MS) return false
-      log('发现陈旧锁（超过 90 分钟），抢占')
-    }
-    writeFileSync(f, String(Date.now()), 'utf8')
-    return true
+    const raw = readFileSync(lockFile(), 'utf8').trim()
+    const [pid, at] = raw.split(':').map(Number)
+    return { pid, at, raw }
   } catch {
-    return false
+    return null
   }
 }
 
-function releaseLock() {
-  try { rmSync(lockFile(), { force: true }) } catch { /* 忽略 */ }
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+/** 返回持锁的 pid（0 = 没拿到） */
+function acquireLock() {
+  try { mkdirSync(pluginHome(), { recursive: true }) } catch { return 0 }
+  const info = lockInfo()
+  if (info) {
+    const stale = !pidAlive(info.pid) || (Date.now() - info.at > LOCK_STALE_MS)
+    if (!stale) return 0
+    log(`抢占陈旧锁（pid=${info.pid}，存活=${pidAlive(info.pid)}）`)
+    try { rmSync(lockFile(), { force: true }) } catch { return 0 }
+  }
+  try {
+    // wx = 文件已存在就失败，天然防并发
+    writeFileSync(lockFile(), `${process.pid}:${Date.now()}`, { encoding: 'utf8', flag: 'wx' })
+    return process.pid
+  } catch {
+    return 0
+  }
+}
+
+/** 只释放自己的锁 —— 被别人抢占后不能把别人的锁删了 */
+function releaseLock(owner) {
+  const info = lockInfo()
+  if (info && owner && info.pid === owner) {
+    try { rmSync(lockFile(), { force: true }) } catch { /* 忽略 */ }
+  }
 }
 
 function isRunning() {
-  try {
-    if (!existsSync(lockFile())) return false
-    const started = Number(readFileSync(lockFile(), 'utf8')) || 0
-    return Date.now() - started < LOCK_STALE_MS
-  } catch {
-    return false
-  }
+  const info = lockInfo()
+  if (!info) return false
+  return pidAlive(info.pid) && Date.now() - info.at < LOCK_STALE_MS
 }
 
 // ---------------------------------------------------------------- 跑一次
@@ -240,8 +305,24 @@ function countPendingLines() {
 }
 
 function runOnce(cfg, { manual = false } = {}) {
-  if (!acquireLock()) {
-    return { ok: false, error: '上一轮还在跑（或锁没释放），这次先跳过' }
+  const owner = acquireLock()
+  if (!owner) return { ok: false, error: '上一轮还在跑（或锁没释放），这次先跳过' }
+
+  // 「为哪一天跑的」——跨午夜也不会记错
+  const runForDay = localDate()
+
+  /** 任何结束路径都要走到这里：写结果 + 记「今天跑过」（避免每分钟重试） */
+  let finalized = false
+  const finalize = (result) => {
+    if (finalized) return
+    finalized = true
+    try {
+      writeCfg({ lastRun: localStamp(), lastResult: result, lastFiredDay: runForDay })
+      log(`结束 · ${result}`)
+    } catch (e) {
+      log(`写结果失败：${e?.message ?? e}`)
+    }
+    releaseLock(owner)
   }
 
   try {
@@ -250,25 +331,24 @@ function runOnce(cfg, { manual = false } = {}) {
 
     const charter = join(personaHome(), 'distill.md')
     const overlay = ensureOverlay(cfg.model)
-    const today = localDate()
+    const today = runForDay
 
-    // 跑之前的基线（用来判断「到底有没有产出」）
+    // 基线
     const agentsBefore = existsSync(agentsFile()) ? readFileSync(agentsFile(), 'utf8') : ''
     const snap = snapshotAgents()
     const pendingBefore = countPendingLines()
     const stateFile = join(personaHome(), 'state.json')
-    const stateMtimeBefore = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0
+    let stateMtimeBefore = 0
+    try { stateMtimeBefore = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0 } catch { /* 忽略 */ }
 
     const prompt = `读 ${charter}，按它做今天的蒸馏。今天是 ${today}。做完在 ${join(personaHome(), 'run.log')} 追加一行。`
     const cmd = buildHeadlessCommand({ overlay, prompt })
     if (cmd.missing) {
-      releaseLock()
-      writeCfg({ lastRun: localStamp(), lastResult: '找不到 dsh CLI（可设置 DSH_BIN 环境变量）' })
-      log('找不到 dsh CLI，蒸馏没跑起来')
+      finalize('找不到 dsh CLI（可设置 DSH_BIN 环境变量）')
       return { ok: false, error: '找不到 dsh CLI：请设置 DSH_BIN 环境变量后重启' }
     }
 
-    log(`开始蒸馏${manual ? '（手动）' : ''}：${today}`)
+    log(`开始蒸馏${manual ? '（手动）' : ''}：${today}，pid=${owner}`)
     const child = spawn(cmd.command, cmd.args, {
       cwd: dshHome(),
       env: { ...process.env, ...cmd.env, DSH_HOME: dshHome() },
@@ -282,74 +362,74 @@ function runOnce(cfg, { manual = false } = {}) {
     const finish = (code) => {
       if (settled) return
       settled = true
-      releaseLock()
-
-      // 1) 手写段校验（最重要）
       let result = ''
       try {
+        // 1) 内容 + 结构校验
         const after = existsSync(agentsFile()) ? readFileSync(agentsFile(), 'utf8') : ''
-        const v = verifyHand(agentsBefore, after)
+        const v = verifyPersona(agentsBefore, after)
         if (!v.ok) {
           const ok = restoreFrom(snap)
-          result = `⚠️ ${v.why}，${ok ? '已回滚到跑之前' : '回滚失败（快照在 archive）'}`
-          log(`手写段异常：${v.why}；回滚=${ok}`)
+          result = `⚠️ ${v.why}，${ok ? '已回滚到跑之前' : '回滚失败'}`
+          log(`人格异常：${v.why}；回滚=${ok}；快照=${snap || '无'}`)
         }
       } catch (e) {
-        log(`校验手写段时出错：${e?.message ?? e}`)
+        log(`校验人格时出错：${e?.message ?? e}`)
       }
 
-      // 2) 到底有没有产出
+      // 2) 有没有产出
       if (!result) {
-        const pendingAfter = countPendingLines()
-        const stateMtimeAfter = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0
-        const changed = pendingAfter !== pendingBefore || stateMtimeAfter !== stateMtimeBefore
-        if (spawnErr) result = spawnErr
-        else if (code === null) result = '进程异常结束（没有退出码）'
-        else if (code !== 0) result = `exit=${code}`
-        else if (!changed) result = '完成，但没有任何产出（看日志）'
-        else result = '完成'
+        try {
+          const pendingAfter = countPendingLines()
+          let stateMtimeAfter = 0
+          try { stateMtimeAfter = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0 } catch { /* 忽略 */ }
+          const changed = pendingAfter !== pendingBefore || stateMtimeAfter !== stateMtimeBefore
+          if (spawnErr) result = spawnErr
+          else if (code === null) result = '进程异常结束（没有退出码）'
+          else if (code !== 0) result = `exit=${code}`
+          else if (!changed) result = '完成，但没有任何产出（看日志）'
+          else result = '完成'
+        } catch (e) {
+          result = `完成（判定产出时出错：${e?.message ?? e}）`
+        }
       }
 
-      writeCfg({ lastRun: localStamp(), lastResult: result, lastFiredDay: localDate() })
-      log(`执行完毕 exit=${code} · ${result}`)
+      if (out) {
+        try { writeFileSync(join(pluginHome(), 'last-run.txt'), out, 'utf8') } catch { /* 忽略 */ }
+      }
+      finalize(result)
     }
 
-    child.stdout?.on('data', (d) => { out += d.toString() })
-    child.stderr?.on('data', (d) => { out += d.toString() })
+    child.stdout?.on('data', (d) => { if (out.length < MAX_OUT) out += d.toString() })
+    child.stderr?.on('data', (d) => { if (out.length < MAX_OUT) out += d.toString() })
     child.on('error', (e) => {
       spawnErr = `启动失败：${e?.message ?? e}`
-      log(spawnErr)
       finish(null)
     })
-    child.on('close', (code) => {
-      try { writeFileSync(join(pluginHome(), 'last-run.txt'), out, 'utf8') } catch { /* 忽略 */ }
-      finish(code)
-    })
+    child.on('close', (code) => finish(code))
 
-    if (!child.pid) {
-      finish(null)
-      return { ok: false, error: '子进程没起来，看 run.log' }
-    }
     return { ok: true, pid: child.pid }
   } catch (e) {
-    releaseLock()
     const msg = `启动异常：${e?.message ?? e}`
     log(msg)
-    writeCfg({ lastRun: localStamp(), lastResult: msg })
+    finalize(msg)
     return { ok: false, error: msg }
   }
 }
 
-// ---------------------------------------------------------------- 到点判断（含补跑）
+// ---------------------------------------------------------------- 到点判断
 
+/**
+ * 当天内任意时刻都算「该跑」—— 不再设 6 小时窗口。
+ * 窗口的副作用是「10:30 之后才开机的人永远不跑」，比补跑晚一点糟糕得多。
+ */
 function dueNow(cfg, now = new Date()) {
   if (!cfg.enabled) return false
   if (cfg.lastFiredDay === localDate(now)) return false
-  const [h, m] = normalizeRunAt(cfg.runAt).split(':').map(Number)
+  const t = normalizeRunAt(cfg.runAt)
+  if (!t) return false
+  const [h, m] = t.split(':').map(Number)
   const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0)
-  if (now < target) return false
-  if (now - target > CATCHUP_WINDOW_MS) return false // 太久了就不补，免得开机连跑一周
-  return true
+  return now >= target
 }
 
 // ---------------------------------------------------------------- HTTP 工具
@@ -386,7 +466,7 @@ function readBody(req, limit = 64 * 1024) {
 let cliCache = { v: null, at: 0 }
 
 export function apply(ctx, config) {
-  // 只在「用户已经开过」或「已经有面板」时补骨架 —— 不替用户凭空造人格
+  // 只在用户开过、或已经有面板时补骨架 —— 不替用户凭空造人格
   try {
     const cfg = readCfg()
     if (cfg.enabled || existsSync(agentsFile())) {
@@ -437,7 +517,7 @@ export function apply(ctx, config) {
       if ('enabled' in body) clean.enabled = body.enabled === true || body.enabled === 'true'
       if ('runAt' in body) {
         const v = normalizeRunAt(body.runAt)
-        if (!/^\d{2}:\d{2}$/.test(v)) return sendJson(res, 400, { ok: false, error: '时间格式要 HH:mm' })
+        if (!v) return sendJson(res, 400, { ok: false, error: '时间要写成 HH:mm（比如 04:10）' })
         clean.runAt = v
       }
       if ('persona' in body) clean.persona = body.persona === 'clam' ? 'clam' : 'blank'
@@ -446,7 +526,6 @@ export function apply(ctx, config) {
       }
       const r = writeCfg(clean)
       if (!r.ok) return sendJson(res, 500, { ok: false, error: r.error })
-      // 开了开关就补骨架（用户点了保存 = 同意生成）
       if (r.config.enabled) {
         try {
           ensurePersonaHome()
@@ -469,19 +548,28 @@ export function apply(ctx, config) {
       const body = await readBody(req)
       const id = String(body.id || '').trim()
       const rawDir = String(body.dir || `${id}-duty`).trim()
-      // ⚠️ 只收单段目录名，挡住 ../ 和绝对路径
       if (!/^[a-z0-9][a-z0-9._-]{0,40}$/i.test(id)) return sendJson(res, 400, { ok: false, error: 'id 只能用字母数字和 -' })
       if (!/^[A-Za-z0-9._-]+$/.test(rawDir) || rawDir === '.' || rawDir === '..') {
         return sendJson(res, 400, { ok: false, error: '目录名不合法' })
       }
-      const dir = join(dshHome(), rawDir)
-      if (!resolve(dir).startsWith(resolve(dshHome()))) {
+      const base = resolve(dshHome())
+      const dir = join(base, rawDir)
+      if (!(resolve(dir) === base || resolve(dir).startsWith(base + sep))) {
         return sendJson(res, 400, { ok: false, error: '目录必须在家目录里面' })
       }
       try {
         mkdirSync(dir, { recursive: true })
         const file = join(dir, 'source.json')
-        if (!existsSync(file)) {
+        if (existsSync(file)) {
+          // 已存在但停用的：点一下就重新启用（不然这个按钮永远没反应）
+          try {
+            const cur = JSON.parse(readFileSync(file, 'utf8'))
+            if (cur.enabled === false) {
+              cur.enabled = true
+              writeFileSync(file, JSON.stringify(cur, null, 2), 'utf8')
+            }
+          } catch { /* 坏文件就算了，下面照旧补原料 */ }
+        } else {
           writeFileSync(file, JSON.stringify({
             id, name: String(body.name || id), charter: 'duty.md',
             voice: 'voice.md', notes: 'notes.md', digestDir: 'digest',
@@ -536,13 +624,13 @@ export function apply(ctx, config) {
     log(`HTTP 路由没挂上：${e?.message ?? e}`)
   }
 
-  // ---- 每天定时 + 补跑（每分钟看一眼，整段包住，抛异常不会把 host 弄倒）----
+  // ---- 定时器：整段包住，抛异常只写日志 ----
   const timer = setInterval(() => {
     try {
       const cfg = readCfg()
       if (!dueNow(cfg)) return
       if (isRunning()) return
-      log(`到点触发（${cfg.runAt}${cfg.lastFiredDay ? '，上次 ' + cfg.lastFiredDay : '，首次'}）`)
+      log(`到点触发（${cfg.runAt}${cfg.lastFiredDay ? '，上次为 ' + cfg.lastFiredDay + ' 跑' : '，首次'}）`)
       runOnce(cfg)
     } catch (e) {
       log(`定时任务异常：${e?.message ?? e}`)
