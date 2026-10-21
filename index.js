@@ -224,7 +224,49 @@ export function apply(ctx, config) {
             added: new Date().toISOString().slice(0, 10),
           }, null, 2), 'utf8')
         }
-        return sendJson(res, 200, { ok: true, file })
+
+        // ⭐ 接上之后立刻把三份原料铺好（缺什么补什么，不覆盖已有的）
+        //    不然 source.json 说「原料在 voice.md」，文件却不存在 ⇒ 蒸馏读不到 ⇒ 降级保护一直拦着定型
+        const made = [file]
+        const voiceF = join(dir, 'voice.md')
+        if (!existsSync(voiceF)) {
+          writeFileSync(voiceF, [
+            `# 说话样本 · ${String(body.name || id)}`,
+            '',
+            '> 每轮往这里记：**原句 + 一句为什么好**。只学说法，不抄去发。',
+            '> 格式：',
+            '> ```',
+            '> - 「原句」—— 为什么好',
+            '> ```',
+            '',
+            '（还没样本。装好对应的抓取工具后，它会自己往里写。）',
+            '',
+          ].join('\n'), 'utf8')
+          made.push(voiceF)
+        }
+        const notesF = join(dir, 'notes.md')
+        if (!existsSync(notesF)) {
+          writeFileSync(notesF, [
+            `# 想明白的事 · ${String(body.name || id)}`,
+            '',
+            '> 每轮最多 3 条。**写条件，别写口号** —— 下次能少踩一次坑的，才留下。',
+            '> 格式：',
+            '> ```',
+            '> - <日期> · 结论',
+            '> ```',
+            '',
+            '（还没结论。）',
+            '',
+          ].join('\n'), 'utf8')
+          made.push(notesF)
+        }
+        const digestDir = join(dir, 'digest')
+        if (!existsSync(digestDir)) {
+          mkdirSync(digestDir, { recursive: true })
+          made.push(digestDir)
+        }
+
+        return sendJson(res, 200, { ok: true, file, created: made })
       } catch (e) {
         return sendJson(res, 500, { ok: false, error: e?.message ?? String(e) })
       }
