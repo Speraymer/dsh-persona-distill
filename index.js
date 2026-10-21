@@ -246,14 +246,13 @@ function restoreFrom(path) {
 
 const lockFile = () => join(pluginHome(), 'run.lock')
 
-function lockInfo() {
-  try {
-    const raw = readFileSync(lockFile(), 'utf8').trim()
-    const [pid, at] = raw.split(':').map(Number)
-    return { pid, at, raw }
-  } catch {
-    return null
-  }
+function lockToken() {
+  try { return readFileSync(lockFile(), 'utf8').trim() } catch { return '' }
+}
+
+function pidOf(token) {
+  const p = Number(String(token || '').split(':')[0])
+  return Number.isFinite(p) ? p : 0
 }
 
 function pidAlive(pid) {
@@ -261,37 +260,41 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
-/** 返回持锁的 pid（0 = 没拿到） */
+/**
+ * 拿锁：token = pid:时间:随机。
+ * ⚠️ **只抢死进程的锁**（pid 不存在）。活进程哪怕跑了一整天也不抢 ——
+ *    不然长跑会被自己二次触发，两轮互滚。
+ */
 function acquireLock() {
-  try { mkdirSync(pluginHome(), { recursive: true }) } catch { return 0 }
-  const info = lockInfo()
-  if (info) {
-    const stale = !pidAlive(info.pid) || (Date.now() - info.at > LOCK_STALE_MS)
-    if (!stale) return 0
-    log(`抢占陈旧锁（pid=${info.pid}，存活=${pidAlive(info.pid)}）`)
-    try { rmSync(lockFile(), { force: true }) } catch { return 0 }
+  try { mkdirSync(pluginHome(), { recursive: true }) } catch { return '' }
+  const cur = lockToken()
+  if (cur) {
+    const pid = pidOf(cur)
+    if (pidAlive(pid)) return ''
+    log('陈旧锁（pid=' + pid + ' 已不在），抢占')
+    try { rmSync(lockFile(), { force: true }) } catch { return '' }
   }
+  const token = process.pid + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8)
   try {
-    // wx = 文件已存在就失败，天然防并发
-    writeFileSync(lockFile(), `${process.pid}:${Date.now()}`, { encoding: 'utf8', flag: 'wx' })
-    return process.pid
+    writeFileSync(lockFile(), token, { encoding: 'utf8', flag: 'wx' })
+    return token
   } catch {
-    return 0
+    return ''
   }
 }
 
-/** 只释放自己的锁 —— 被别人抢占后不能把别人的锁删了 */
-function releaseLock(owner) {
-  const info = lockInfo()
-  if (info && owner && info.pid === owner) {
+/** 只释放自己的锁（token 完全一致才删） */
+function releaseLock(token) {
+  if (!token) return
+  if (lockToken() === token) {
     try { rmSync(lockFile(), { force: true }) } catch { /* 忽略 */ }
   }
 }
 
 function isRunning() {
-  const info = lockInfo()
-  if (!info) return false
-  return pidAlive(info.pid) && Date.now() - info.at < LOCK_STALE_MS
+  const cur = lockToken()
+  if (!cur) return false
+  return pidAlive(pidOf(cur))
 }
 
 // ---------------------------------------------------------------- 跑一次
@@ -338,6 +341,9 @@ function runOnce(cfg, { manual = false } = {}) {
     const snap = snapshotAgents()
     const pendingBefore = countPendingLines()
     const stateFile = join(personaHome(), 'state.json')
+    const runLogFile = join(personaHome(), 'run.log')
+    let runLogBefore = 0
+    try { runLogBefore = existsSync(runLogFile) ? statSync(runLogFile).mtimeMs : 0 } catch { /* 忽略 */ }
     let stateMtimeBefore = 0
     try { stateMtimeBefore = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0 } catch { /* 忽略 */ }
 
@@ -348,7 +354,7 @@ function runOnce(cfg, { manual = false } = {}) {
       return { ok: false, error: '找不到 dsh CLI：请设置 DSH_BIN 环境变量后重启' }
     }
 
-    log(`开始蒸馏${manual ? '（手动）' : ''}：${today}，pid=${owner}`)
+    log(`开始蒸馏${manual ? '（手动）' : ''}：${today}，pid=${pidOf(owner)}`)
     const child = spawn(cmd.command, cmd.args, {
       cwd: dshHome(),
       env: { ...process.env, ...cmd.env, DSH_HOME: dshHome() },
@@ -381,8 +387,10 @@ function runOnce(cfg, { manual = false } = {}) {
         try {
           const pendingAfter = countPendingLines()
           let stateMtimeAfter = 0
+          let runLogAfter = 0
           try { stateMtimeAfter = existsSync(stateFile) ? statSync(stateFile).mtimeMs : 0 } catch { /* 忽略 */ }
-          const changed = pendingAfter !== pendingBefore || stateMtimeAfter !== stateMtimeBefore
+          try { runLogAfter = existsSync(runLogFile) ? statSync(runLogFile).mtimeMs : 0 } catch { /* 忽略 */ }
+          const changed = pendingAfter !== pendingBefore || stateMtimeAfter !== stateMtimeBefore || runLogAfter !== runLogBefore
           if (spawnErr) result = spawnErr
           else if (code === null) result = '进程异常结束（没有退出码）'
           else if (code !== 0) result = `exit=${code}`
@@ -424,7 +432,8 @@ function runOnce(cfg, { manual = false } = {}) {
  */
 function dueNow(cfg, now = new Date()) {
   if (!cfg.enabled) return false
-  if (cfg.lastFiredDay === localDate(now)) return false
+  const today = localDate(now)
+  if (cfg.lastFiredDay === today || memoryFiredDay === today) return false
   const t = normalizeRunAt(cfg.runAt)
   if (!t) return false
   const [h, m] = t.split(':').map(Number)
@@ -464,12 +473,13 @@ function readBody(req, limit = 64 * 1024) {
 // ---------------------------------------------------------------- 插件入口
 
 let cliCache = { v: null, at: 0 }
+let memoryFiredDay = '' // 配置写不进去时的兜底，避免每分钟重试
 
 export function apply(ctx, config) {
   // 只在用户开过、或已经有面板时补骨架 —— 不替用户凭空造人格
   try {
     const cfg = readCfg()
-    if (cfg.enabled || existsSync(agentsFile())) {
+    if (cfg.enabled) {
       ensurePersonaHome()
       ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity, persona: cfg.persona })
     }
@@ -568,7 +578,9 @@ export function apply(ctx, config) {
               cur.enabled = true
               writeFileSync(file, JSON.stringify(cur, null, 2), 'utf8')
             }
-          } catch { /* 坏文件就算了，下面照旧补原料 */ }
+          } catch (e) {
+            return sendJson(res, 400, { ok: false, error: 'source.json 坏了，先修好它：' + (e?.message ?? e) })
+          }
         } else {
           writeFileSync(file, JSON.stringify({
             id, name: String(body.name || id), charter: 'duty.md',
