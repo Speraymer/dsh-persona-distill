@@ -166,7 +166,8 @@ window.__ModuleLoader__.load({
           },
             h('div', { style: { flex: 1 } },
               h('div', { style: { fontSize: 13 } }, x.name + (x.plugin ? '（' + x.plugin + '）' : '')),
-              h('div', { style: S.hint }, x.note)),
+              h('div', { style: S.hint }, x.note),
+              x.setup ? h('div', { style: { ...S.hint, color: '#b45309', fontSize: 11, marginTop: 2 } }, '⚠️ ' + x.setup) : null),
             h('span', {
               style: { ...S.tag, color: x.active ? '#047857' : '#6b7280' },
             }, x.active ? '已接上' : '没找到'),
