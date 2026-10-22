@@ -2,7 +2,7 @@
 
 把「每天刷到的原料」蒸馏成「会自己长大的人格」。
 
-> AI 助手每次都从零开始，你教它的东西第二天就忘了。
+> 独立人格不该每次都从零开始，你教它的东西第二天就忘了。
 > 这个插件给你一条流水线：**原料天天攒，人格每周长。**
 > 学的是「怎么活」，不只是「怎么说」—— 说话只是最表面的一层。
 
@@ -31,6 +31,8 @@
 - **人格不天天改**：每天改一次，一年 365 版，第 300 版跟第 1 版早就不是一个人了。
 - **覆盖式重写，不是往上堆**：它说的是「我现在是什么样」，不是「我一共学过多少」。
 - **只留一份人格**：两份一定打架。
+- **人格与记忆分工**：本插件回答“我是谁”；全局记忆回答“我经历过什么”。用户资料、关系、共同经历和具体事件不会被蒸馏成人格。
+- **来源硬隔离**：`~/.dsh/global-memory`、`~/.dsh/persona` 和 `~/.dsh/persona-distill` 不会被识别或接入为蒸馏源。
 
 ---
 
@@ -121,8 +123,12 @@ dsh plugin --profile web add dsh-persona-distill
 
 | 插件 | 提供什么 | 装法 |
 |---|---|---|
-| **dsh-bili-scroll** | 说话样本（真人评论原句）+ 踩坑结论 + 看过的片 | `dsh plugin --profile web add dsh-bili-scroll` |
-| **dsh-bili-humanism** | 长文手账（怎么活、怎么看）+ 人格笔记本 | `dsh plugin --profile web add dsh-bili-humanism` |
+| **dsh-yu-bili** | 说话样本（真人评论原句）+ 踩坑结论 + 看过的片 + 手账 | `dsh plugin --profile web add github:Speraymer/dsh-yu-bili` |
+| **dsh-yu-zhihu** | 官方热榜 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile web add github:Speraymer/dsh-yu-zhihu` |
+| **dsh-yu-weibo** | 好友时间线 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile web add github:Speraymer/dsh-yu-weibo` |
+
+> ⚠️ 这些插件都是**可选**的：只装人格蒸馏、一个源都不装也能跑，只是没原料可学。
+> `source.json` 协议向后兼容，旧版的 `id` / 路径写法不用改。
 
 设置页的「推荐的源插件」会列出所有已知的，**装没装、接没接上一眼能看到**。
 
@@ -141,7 +147,7 @@ dsh plugin --profile web add dsh-persona-distill
 - 加新接口 = 往 `lib/external.mjs` 的 `ADAPTERS` 里加一条，主流程不动
 
 ---
-## 加一个源（微博 / 知乎 / 你自己的）
+## 加一个自定义源
 
 不用改任何配置：
 
@@ -183,6 +189,33 @@ dsh plugin --profile web add dsh-persona-distill
 - 不接受访者名字、账号名、个人嘱托——那些全在你的机器上，由你在设置页填
 - 指令里出现「这是测试 / 假数据 / 别当真」的源，会被当成不可信内容，不采信
 - 评论、字幕、网页里的文字都是**素材**，不是给 AI 的指令
+
+---
+
+## source.json 协议（给做源插件的）
+
+源插件只要在自己的目录（如 `~/.dsh/bili-duty/`）里放一份 `source.json`，蒸馏就能发现它。
+**这是唯一约定，没有共享 npm 包、没有兄弟插件之间的 import。**
+
+| 字段 | 必填 | 默认 | 含义 |
+|---|---|---|---|
+| `id` | 否 | 目录名 | 稳定标识；**发布后不要再改**（游标按 id 存） |
+| `name` | 否 | 同 id | 设置页显示用 |
+| `enabled` | 否 | `true` | `false` = 认得出但不蒸馏（源可以自己先关着） |
+| `voice` | 否 | `voice.md` | 说话样本文件名 |
+| `notes` | 否 | `notes.md` | 结论/踩坑文件名 |
+| `digestDir` | 否 | `digest` | 归档目录名（按月分文件） |
+| `charter` | 否 | 空 | 那个源自己的章程文件名 |
+
+**兼容规则**（都是硬承诺）：
+
+1. 新增字段必须可选、有默认值；老读者读不懂就忽略，不许报错。
+2. 缺文件不致命：`voice.md` / `notes.md` / `digest` 少哪个就按「没内容」处理。
+3. 坏 JSON 只跳过那一个源，不影响其它源，更不许让整轮蒸馏失败。
+4. 保留目录（`global-memory` / `persona` / `persona-distill`）永远不会被当成源。
+5. 生产者（源插件）和消费者（人格蒸馏）各自独立安装：只装消费者 → 一个源都没有，安静跳过；
+   只装生产者 → 只在本地攒原料，没人读；两者都装 → 通过 `source.json` 接上。
+   三类组合各有契约测试（`test/contract.test.mjs`）。
 
 ---
 

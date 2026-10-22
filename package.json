@@ -13,6 +13,9 @@
   "license": "MIT",
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -43,5 +46,13 @@
         "@deepseek-ai/dsh-client-ui-settings-plugins"
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Speraymer/dsh-persona-distill.git"
+  },
+  "homepage": "https://github.com/Speraymer/dsh-persona-distill#readme",
+  "bugs": {
+    "url": "https://github.com/Speraymer/dsh-persona-distill/issues"
   }
 }

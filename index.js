@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, cop
 import { join, resolve, sep } from 'node:path'
 import { dshHome, pluginHome, personaHome, agentsFile } from './lib/paths.mjs'
 import { buildHeadlessCommand } from './lib/dsh.mjs'
-import { probeSources } from './lib/sources.mjs'
+import { isReservedSourceDir, probeSources } from './lib/sources.mjs'
 import { ensurePersonaHome, ensureAgents, readAgentsSections } from './lib/init.mjs'
 import { syncExternalSources, probeExternalSources } from './lib/external.mjs'
 
@@ -89,9 +89,13 @@ function normalizeRunAt(s) {
 
 const cfgFile = () => join(pluginHome(), 'config.json')
 
+export function parseJsonText(text) {
+  return JSON.parse(String(text).replace(/^\uFEFF/, ''))
+}
+
 function readCfg() {
   try {
-    const raw = JSON.parse(readFileSync(cfgFile(), 'utf8'))
+    const raw = parseJsonText(readFileSync(cfgFile(), 'utf8'))
     return { ...DEFAULTS, ...raw, runAt: normalizeRunAt(raw.runAt) || '04:10' }
   } catch {
     return { ...DEFAULTS }
@@ -612,6 +616,7 @@ export function apply(ctx, config) {
       if (!/^[A-Za-z0-9._-]+$/.test(rawDir) || rawDir === '.' || rawDir === '..') {
         return sendJson(res, 400, { ok: false, error: '目录名不合法' })
       }
+      if (isReservedSourceDir(rawDir)) return sendJson(res, 400, { ok: false, error: '人格、全局记忆和插件运行目录不能接成蒸馏源' })
       const base = resolve(dshHome())
       const dir = join(base, rawDir)
       if (!(resolve(dir) === base || resolve(dir).startsWith(base + sep))) {
