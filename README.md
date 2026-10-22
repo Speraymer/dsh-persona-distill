@@ -115,6 +115,21 @@ dsh plugin --profile web add dsh-persona-distill
 
 ---
 
+## 推荐的源插件
+
+装上一个就能用，不用额外配置：
+
+| 插件 | 提供什么 | 装法 |
+|---|---|---|
+| **dsh-bili-scroll** | 说话样本（真人评论原句）+ 踩坑结论 + 看过的片 | `dsh plugin --profile web add dsh-bili-scroll` |
+| **dsh-bili-humanism** | 长文手账（怎么活、怎么看）+ 人格笔记本 | `dsh plugin --profile web add dsh-bili-humanism` |
+
+设置页的「推荐的源插件」会列出所有已知的，**装没装、接没接上一眼能看到**。
+
+> humanism 需要 B站 凭证才能读视频。装完之后把它的 `credentialPath` 指向
+> bili-scroll 扫码登录写下的那份凭证就行（它只认 `sessdata` 字段，格式通用）。
+
+---
 ## 接别人的插件（外部记忆源）
 
 有些插件不按这里的形状写东西。比如 **dsh-bili-humanism** 写的是按天分篇的长文手账。

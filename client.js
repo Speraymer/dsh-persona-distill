@@ -48,13 +48,14 @@ window.__ModuleLoader__.load({
       const [sources, setSources] = React.useState([])
       const [agents, setAgents] = React.useState(null)
       const [status, setStatus] = React.useState({})
+      const [external, setExternal] = React.useState([])
       const [msg, setMsg] = React.useState('')
 
       const load = async () => {
         setLoading(true); setErr('')
         try {
           const r = await jget('/status')
-          setCfg(r.config); setSources(r.sources || []); setAgents(r.agents || null); setStatus(r)
+          setCfg(r.config); setSources(r.sources || []); setAgents(r.agents || null); setStatus(r); setExternal(r.external || [])
         } catch (e) { setErr(e.message) } finally { setLoading(false) }
       }
       React.useEffect(() => { load() }, [])
@@ -154,6 +155,23 @@ window.__ModuleLoader__.load({
             }, STATUS_TEXT[s.status] || s.status),
             s.status === 'detected'
               ? h('button', { style: { ...S.btn, marginLeft: 8 }, onClick: () => connect(s) }, '接上')
+              : null))),
+
+        h('div', { style: S.card },
+          h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '推荐的源插件'),
+          h('div', { style: S.hint }, '这些插件能产原料。装了会自动发现，不用额外配置。'),
+          ...external.map((x) => h('div', {
+            key: x.id,
+            style: { ...S.row, justifyContent: 'space-between', marginTop: 8, alignItems: 'flex-start' },
+          },
+            h('div', { style: { flex: 1 } },
+              h('div', { style: { fontSize: 13 } }, x.name + (x.plugin ? '（' + x.plugin + '）' : '')),
+              h('div', { style: S.hint }, x.note)),
+            h('span', {
+              style: { ...S.tag, color: x.active ? '#047857' : '#6b7280' },
+            }, x.active ? '已接上' : '没找到'),
+            !x.active && x.install
+              ? h('div', { style: { ...S.hint, fontSize: 11, marginLeft: 8 } }, x.install)
               : null))),
 
         agents && agents.exists
