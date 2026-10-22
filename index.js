@@ -19,6 +19,7 @@ import { dshHome, pluginHome, personaHome, agentsFile } from './lib/paths.mjs'
 import { buildHeadlessCommand } from './lib/dsh.mjs'
 import { probeSources } from './lib/sources.mjs'
 import { ensurePersonaHome, ensureAgents, readAgentsSections } from './lib/init.mjs'
+import { syncExternalSources, probeExternalSources } from './lib/external.mjs'
 
 export const name = 'persona-distill'
 export const inject = ['webServer']
@@ -332,6 +333,10 @@ function runOnce(cfg, { manual = false } = {}) {
   try {
     ensurePersonaHome()
     ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity, persona: cfg.persona })
+    try {
+      const ext = syncExternalSources().filter((x) => x.active)
+      if (ext.length) log('外部源已同步：' + ext.map(function (x) { return x.id + '(' + x.entries + ' 条)' }).join('、'))
+    } catch (e) { log('外部源同步失败：' + (e?.message ?? e)) }
 
     const charter = join(personaHome(), 'distill.md')
     const overlay = ensureOverlay(cfg.model)
@@ -524,6 +529,7 @@ export function apply(ctx, config) {
     if (cfg.enabled) {
       ensurePersonaHome()
       ensureAgents({ ownerName: cfg.ownerName, heart: cfg.heart, identity: cfg.identity, persona: cfg.persona })
+      try { syncExternalSources() } catch (e) { log('外部源同步失败：' + (e?.message ?? e)) }
     }
   } catch (e) {
     log(`初始化失败：${e?.message ?? e}`)
@@ -547,6 +553,7 @@ export function apply(ctx, config) {
         hasWechat: existsSync(join(dshHome(), 'profiles', 'desktop', 'node_modules', 'dsh-wechat-plugin', 'cli.js')),
         running: isRunning(),
         dueNow: dueNow(cfg),
+        external: probeExternalSources(),
       })
     }
 
