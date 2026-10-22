@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-distill",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DSH 插件：把每天刷到的原料，蒸馏成一个会自己长大的人格 —— 原料天天攒，人格每周长",
   "keywords": [
     "dsh",
