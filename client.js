@@ -158,8 +158,20 @@ window.__ModuleLoader__.load({
               : null))),
 
         h('div', { style: S.card },
-          h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '推荐的源插件'),
-          h('div', { style: S.hint }, '这些插件能产原料。装了会自动发现，不用额外配置。'),
+          h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '一起用（另外七个）'),
+          h('div', { style: S.hint }, '八个插件各管一段：人格、记忆、三个内容源、心情、两个出口。装哪个都不影响别的，缺了会安静跳过。'),
+          ...(status.siblings || []).map((x) => h('div', {
+            key: x.pkg,
+            style: { marginTop: 10, borderTop: '1px solid var(--dsw-border, #e5e7eb)', paddingTop: 8 },
+          },
+            h('div', { style: { fontSize: 13, fontWeight: 600 } }, x.name + '（' + x.pkg + '）'),
+            h('div', { style: S.hint }, x.desc),
+            h('div', { style: { ...S.hint, fontSize: 11, marginTop: 2, fontFamily: 'ui-monospace, monospace' } },
+              'dsh plugin --profile desktop add github:Speraymer/' + x.pkg)))),
+
+        h('div', { style: S.card },
+          h('div', { style: { fontWeight: 600, marginBottom: 8 } }, '外部源（只读镜像）'),
+          h('div', { style: S.hint }, '有些插件不按三份原料的写法，靠适配器镜像进来。装了会自动发现。'),
           ...external.map((x) => h('div', {
             key: x.id,
             style: { ...S.row, justifyContent: 'space-between', marginTop: 8, alignItems: 'flex-start' },

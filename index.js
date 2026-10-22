@@ -18,6 +18,7 @@ import { join, resolve, sep } from 'node:path'
 import { dshHome, pluginHome, personaHome, agentsFile } from './lib/paths.mjs'
 import { buildHeadlessCommand } from './lib/dsh.mjs'
 import { isReservedSourceDir, probeSources } from './lib/sources.mjs'
+import { otherSiblings } from './lib/siblings.mjs'
 import { ensurePersonaHome, ensureAgents, readAgentsSections } from './lib/init.mjs'
 import { syncExternalSources, probeExternalSources } from './lib/external.mjs'
 
@@ -551,6 +552,8 @@ export function apply(ctx, config) {
         ok: true,
         config: cfg,
         sources: probeSources(),
+        // ⭐ 装了人格插件就推荐另外七个兄弟插件（各装各的，缺谁都能跑）
+        siblings: otherSiblings('dsh-persona-distill'),
         agents: readAgentsSections(),
         home: dshHome(),
         hasDsh: cliCache.v,
