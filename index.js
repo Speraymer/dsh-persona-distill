@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, cop
 import { join, resolve, sep } from 'node:path'
 import { dshHome, pluginHome, personaHome, agentsFile } from './lib/paths.mjs'
 import { buildHeadlessCommand } from './lib/dsh.mjs'
-import { isReservedSourceDir, probeSources } from './lib/sources.mjs'
+import { inspectRegisteredSources, isReservedSourceDir, probeSources } from './lib/sources.mjs'
 import { otherSiblings } from './lib/siblings.mjs'
 import { ensurePersonaHome, ensureAgents, readAgentsSections } from './lib/init.mjs'
 import { syncExternalSources, probeExternalSources } from './lib/external.mjs'
@@ -60,7 +60,6 @@ const OVERLAY_BODY = `# 蒸馏会话用的最小 overlay —— 只要账号和�
 
 const LOCK_STALE_MS = 90 * 60 * 1000
 const MAX_OUT = 2 * 1024 * 1024
-const KEEP_SNAPSHOTS = 30
 
 // ---------------------------------------------------------------- 时间
 
@@ -169,6 +168,45 @@ function handSection(text) {
   return m ? m[1] : null
 }
 
+function autoSection(text) {
+  const m = String(text).match(/<!-- AUTO:BEGIN -->([\s\S]*?)<!-- AUTO:END -->/)
+  return m ? m[1].trim() : null
+}
+
+const AUTO_HEADINGS = ['**原则**', '**场景样本**', '**我怎么活**', '**判断**']
+
+/** AUTO 是模型输出，必须当外部输入做硬校验。 */
+export function verifyAutoSection(auto) {
+  if (!auto) return { ok: false, why: 'AUTO 段是空的' }
+  if ([...auto].length > 6000 || auto.split(/\r?\n/).length > 200) {
+    return { ok: false, why: 'AUTO 段超过 6000 字符或 200 行' }
+  }
+  if (/```|~~~/.test(auto)) return { ok: false, why: 'AUTO 段含代码块' }
+
+  let last = -1
+  for (const heading of AUTO_HEADINGS) {
+    const at = auto.indexOf(heading)
+    if (at < 0 || at <= last || auto.indexOf(heading, at + heading.length) >= 0) {
+      return { ok: false, why: `AUTO 固定四段必须按顺序且只出现一次：${AUTO_HEADINGS.join('、')}` }
+    }
+    last = at
+  }
+  const life = auto.slice(auto.indexOf('**我怎么活**') + '**我怎么活**'.length, auto.indexOf('**判断**')).trim()
+  if (!life) return { ok: false, why: 'AUTO 段的“我怎么活”为空；没学够就明确写没学够' }
+
+  const forbidden = [
+    [/[A-Za-z]:[\\/]|\\\\[^\\\s]+[\\/]|~[\\/]\.dsh(?:[\\/]|\b)|\/(?:Users|home|etc)\//i, '本机路径'],
+    [/(?:忽略|无视|绕过).{0,16}(?:之前|此前|上面|系统|开发者|规则|指令|要求)/i, '提示词注入'],
+    [/(?:系统|开发者|用户).{0,4}(?:提示词|消息|指令)|(?:泄露|输出|复述).{0,12}(?:提示词|系统消息)/i, '提示词内容'],
+    [/(?:执行|运行|调用).{0,10}(?:命令|PowerShell|cmd|bash|shell|工具|API)|(?:rm\s+-rf|Remove-Item|Invoke-Expression|curl\s+|wget\s+)/i, '命令或工具指令'],
+    [/(?:从现在起|以后|今后).{0,10}(?:我|你).{0,5}(?:是|叫|成为)|(?:修改|覆盖|重写|替换).{0,10}(?:身份|名字|称呼|红线)|(?:我的|你的)(?:身份|名字|称呼)是/i, '身份改写'],
+  ]
+  for (const [pattern, label] of forbidden) {
+    if (pattern.test(auto)) return { ok: false, why: `AUTO 段含${label}` }
+  }
+  return { ok: true }
+}
+
 function snapshotAgents() {
   const file = agentsFile()
   if (!existsSync(file)) return ''
@@ -177,13 +215,6 @@ function snapshotAgents() {
     mkdirSync(dir, { recursive: true })
     const dst = join(dir, `pre-${localStamp()}.md`)
     copyFileSync(file, dst)
-    // 只留最近 N 份
-    try {
-      const all = readdirSync(dir).filter((f) => f.startsWith('pre-')).sort()
-      for (const old of all.slice(0, Math.max(0, all.length - KEEP_SNAPSHOTS))) {
-        rmSync(join(dir, old), { force: true })
-      }
-    } catch { /* 清理失败不拦着 */ }
     return dst
   } catch (e) {
     log(`快照失败：${e?.message ?? e}`)
@@ -196,7 +227,7 @@ function snapshotAgents() {
  *   - HAND 段内容没被改
  *   - 四个标记都还在（少一个就是结构坏了）
  *   - HAND:END 到 AUTO:BEGIN 之间没被塞东西
- *   - AUTO 段不能整个消失（那是每周的产物，没了等于白跑）
+ *   - AUTO 段不能消失；一旦被重写，还要通过内容硬校验
  */
 function verifyPersona(before, after) {
   const b = handSection(before)
@@ -231,6 +262,13 @@ function verifyPersona(before, after) {
   const hasAutoBefore = before.includes(AUTO_BEGIN) && before.includes(AUTO_END)
   const hasAutoAfter = after.includes(AUTO_BEGIN) && after.includes(AUTO_END)
   if (hasAutoBefore && !hasAutoAfter) return { ok: false, why: 'AUTO 段整个消失了（每周的产物）' }
+
+  const autoBefore = autoSection(before)
+  const autoAfter = autoSection(after)
+  if (autoBefore !== autoAfter) {
+    const checked = verifyAutoSection(autoAfter)
+    if (!checked.ok) return checked
+  }
 
   return { ok: true }
 }
@@ -342,6 +380,14 @@ function runOnce(cfg, { manual = false } = {}) {
       const ext = syncExternalSources().filter((x) => x.active)
       if (ext.length) log('外部源已同步：' + ext.map(function (x) { return x.id + '(' + x.entries + ' 条)' }).join('、'))
     } catch (e) { log('外部源同步失败：' + (e?.message ?? e)) }
+
+    const sourceCheck = inspectRegisteredSources()
+    if (sourceCheck.issues.length) {
+      const msg = '源路径不安全，已停止：' + sourceCheck.issues.map((x) => x.dir).join('、')
+      log(msg)
+      finalize(msg)
+      return { ok: false, error: msg }
+    }
 
     const charter = join(personaHome(), 'distill.md')
     const overlay = ensureOverlay(cfg.model)

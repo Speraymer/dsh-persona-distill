@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { probeSources, scanRegisteredSources } from '../lib/sources.mjs'
+import { inspectRegisteredSources, probeSources, scanRegisteredSources } from '../lib/sources.mjs'
 
 const 造家 = () => mkdtempSync(join(tmpdir(), 'dsh-src-contract-'))
 
@@ -98,5 +98,19 @@ test('保留目录永远不会被当成源（人格/记忆/插件运行目录）
   try {
     for (const d of ['global-memory', 'persona', 'persona-distill']) 写源(home, d, { id: d })
     在临时家(home, () => assert.deepEqual(scanRegisteredSources(), []))
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test('source.json 的路径不能跳出源目录', () => {
+  const home = 造家()
+  try {
+    写源(home, 'good-duty', { id: 'good', voice: 'voice.md' })
+    写源(home, 'bad-duty', { id: 'bad', voice: '../AGENTS.md' })
+    在临时家(home, () => {
+      const result = inspectRegisteredSources()
+      assert.deepEqual(result.sources.map((x) => x.id), ['good'])
+      assert.equal(result.issues.length, 1)
+      assert.equal(result.issues[0].dir, 'bad-duty')
+    })
   } finally { rmSync(home, { recursive: true, force: true }) }
 })
