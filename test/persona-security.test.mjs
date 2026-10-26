@@ -20,6 +20,16 @@ const validAuto = `**原则**
 
 const doc = (auto) => `<!-- HAND:BEGIN 手写段 -->\n身份不动\n<!-- HAND:END -->\n\n<!-- AUTO:BEGIN -->\n${auto}\n<!-- AUTO:END -->\n`
 
+test('第五段「我该少说」可选：放最后可以，放前面或写两遍都不行', () => {
+  const withTail = `${validAuto}\n\n**我该少说**\n- 结论给完就停。`
+  assert.equal(verifyAutoSection(withTail).ok, true)
+  const wrongOrder = `**原则**\n- a\n\n**我该少说**\n- b\n\n**场景样本**\n- c\n\n**我怎么活**\n- d\n\n**判断**\n- e`
+  assert.equal(verifyAutoSection(wrongOrder).ok, false)
+  assert.match(verifyAutoSection(wrongOrder).why, /最后一段/)
+  const twice = `${withTail}\n\n**我该少说**\n- 又写一遍。`
+  assert.equal(verifyAutoSection(twice).ok, false)
+})
+
 test('AUTO 硬校验要求固定四段并拒绝危险内容', () => {
   assert.equal(verifyAutoSection(validAuto).ok, true)
   assert.match(verifyAutoSection(validAuto.replace('**我怎么活**', '**生活**')).why, /四段/)

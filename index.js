@@ -33,6 +33,7 @@ const DEFAULTS = {
   identity: '',
   persona: 'blank',
   model: 'deepseek-flash',
+  provider: 'deepseek-account',
   dshBin: '',
   wechatNotify: 'auto', // auto = 装了微信插件就发；off = 不发
   lastRun: '',
@@ -53,7 +54,7 @@ const OVERLAY_BODY = `# 蒸馏会话用的最小 overlay —— 只要账号和�
 
 - id: agent-default-model
   config:
-    provider: deepseek-account
+    provider: __PROVIDER__
     model: __MODEL__
     reasoningEffort: high
 `
@@ -133,18 +134,23 @@ function log(msg) {
 
 // ---------------------------------------------------------------- overlay
 
-function ensureOverlay(model) {
+function ensureOverlay(model, provider) {
   const home = personaHome()
   mkdirSync(home, { recursive: true })
   const f = join(home, 'headless-overlay.yml')
-  const want = OVERLAY_HEADER + '\n' + OVERLAY_BODY.replace('__MODEL__', model || 'deepseek-flash')
+  const prov = provider || 'deepseek-account'
+  const want = OVERLAY_HEADER + '\n' + OVERLAY_BODY
+    .replace('__PROVIDER__', prov)
+    .replace('__MODEL__', model || 'deepseek-flash')
   try {
     if (existsSync(f)) {
       const cur = readFileSync(f, 'utf8')
       if (cur.trim() === want.trim()) return f
       const line = `    model: ${model || 'deepseek-flash'}`
       const next = cur.includes('# persona-distill overlay')
-        ? cur.replace(/^(\s*model:\s*).*$/m, line)
+        ? cur
+          .replace(/^(\s*model:\s*).*$/m, line)
+          .replace(/^(\s*provider:\s*).*$/m, `    provider: ${prov}`)
         : want
       writeFileSync(f, next, 'utf8')
       return f
@@ -174,6 +180,8 @@ function autoSection(text) {
 }
 
 const AUTO_HEADINGS = ['**原则**', '**场景样本**', '**我怎么活**', '**判断**']
+// 第五段可有可无：有就必须在最后、只出现一次；没有也不影响旧人格通过校验。
+const AUTO_TAIL = '**我该少说**'
 
 /** AUTO 是模型输出，必须当外部输入做硬校验。 */
 export function verifyAutoSection(auto) {
@@ -193,6 +201,12 @@ export function verifyAutoSection(auto) {
   }
   const life = auto.slice(auto.indexOf('**我怎么活**') + '**我怎么活**'.length, auto.indexOf('**判断**')).trim()
   if (!life) return { ok: false, why: 'AUTO 段的“我怎么活”为空；没学够就明确写没学够' }
+
+  const tailAt = auto.indexOf(AUTO_TAIL)
+  if (tailAt >= 0) {
+    if (tailAt < auto.indexOf('**判断**')) return { ok: false, why: `AUTO 段的「${AUTO_TAIL}」必须放在最后一段` }
+    if (auto.indexOf(AUTO_TAIL, tailAt + AUTO_TAIL.length) >= 0) return { ok: false, why: `AUTO 段的「${AUTO_TAIL}」只能出现一次` }
+  }
 
   const forbidden = [
     [/[A-Za-z]:[\\/]|\\\\[^\\\s]+[\\/]|~[\\/]\.dsh(?:[\\/]|\b)|\/(?:Users|home|etc)\//i, '本机路径'],
@@ -390,7 +404,7 @@ function runOnce(cfg, { manual = false } = {}) {
     }
 
     const charter = join(personaHome(), 'distill.md')
-    const overlay = ensureOverlay(cfg.model)
+    const overlay = ensureOverlay(cfg.model, cfg.provider)
     const today = runForDay
 
     // 基线
