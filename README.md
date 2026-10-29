@@ -1,5 +1,11 @@
 # dsh-persona-distill · 人格蒸馏
 
+## 给 Agent 的安装与验收
+
+1. 执行 `dsh plugin --profile desktop add github:Speraymer/dsh-persona-distill`，失败就原样报告，不要改装 npm 同名包。
+2. 重启 DSH；确认“设置 → 人格蒸馏”出现，且 `dsh --profile desktop --dump-config` 退出码为 0。
+3. 首次只让用户填写蒸馏时间、来源和人格手写段；不得覆盖已有 `~/.dsh/AGENTS.md`。
+
 把「每天刷到的原料」蒸馏成「会自己长大的人格」。
 
 > 独立人格不该每次都从零开始，你教它的东西第二天就忘了。
@@ -39,7 +45,7 @@
 ## 装
 
 ```bash
-dsh plugin --profile web add dsh-persona-distill
+dsh plugin --profile desktop add github:Speraymer/dsh-persona-distill
 ```
 
 装完**重启一次 dsh**（bundle 层要重启才组装）。

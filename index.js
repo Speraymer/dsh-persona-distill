@@ -21,6 +21,7 @@ import { inspectRegisteredSources, isReservedSourceDir, probeSources } from './l
 import { otherSiblings } from './lib/siblings.mjs'
 import { ensurePersonaHome, ensureAgents, readAgentsSections } from './lib/init.mjs'
 import { syncExternalSources, probeExternalSources } from './lib/external.mjs'
+import { trustedRequestOrigin } from './lib/http.mjs'
 
 export const name = 'persona-distill'
 export const inject = ['webServer']
@@ -602,6 +603,9 @@ export function apply(ctx, config) {
 
   const handle = async (req, res, url) => {
     const path = url.pathname
+    if (req.method !== 'GET' && !trustedRequestOrigin(req)) {
+      return sendJson(res, 403, { ok: false, error: '请求来源不匹配' })
+    }
 
     if (req.method === 'GET' && path === '/api/persona-distill/status') {
       const cfg = readCfg()
