@@ -129,9 +129,9 @@ dsh plugin --profile desktop add github:Speraymer/dsh-persona-distill
 
 | 插件 | 提供什么 | 装法 |
 |---|---|---|
-| **dsh-yu-bili** | 说话样本（真人评论原句）+ 踩坑结论 + 看过的片 + 手账 | `dsh plugin --profile web add github:Speraymer/dsh-yu-bili` |
-| **dsh-yu-zhihu** | 官方热榜 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile web add github:Speraymer/dsh-yu-zhihu` |
-| **dsh-yu-weibo** | 好友时间线 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile web add github:Speraymer/dsh-yu-weibo` |
+| **dsh-yu-bili** | 说话样本（真人评论原句）+ 踩坑结论 + 看过的片 + 手账 | `dsh plugin --profile desktop add github:Speraymer/dsh-yu-bili` |
+| **dsh-yu-zhihu** | 官方热榜 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile desktop add github:Speraymer/dsh-yu-zhihu` |
+| **dsh-yu-weibo** | 好友时间线 / 搜索的只读表达样本 + 看过的内容 | `dsh plugin --profile desktop add github:Speraymer/dsh-yu-weibo` |
 
 > ⚠️ 这些插件都是**可选**的：只装人格蒸馏、一个源都不装也能跑，只是没原料可学。
 > `source.json` 协议向后兼容，旧版的 `id` / 路径写法不用改。
